@@ -1,0 +1,17 @@
+bch_config:
+  K: 11
+  N: 15
+  M: 4
+  polynomial: "10011"
+
+
+tbcc_config:
+  K: 15
+  N: 30
+  V: 6
+  gen_poly_1: "133"
+  gen_poly_2: "171"
+
+
+# Metadata
+version: 1.0
