@@ -69,7 +69,6 @@ input_0 = np.hstack((v_zeros, states_matrix))
 input_1 = np.hstack((v_ones, states_matrix))
 dst_0 = bin2dec(input_0[:, :num_concat_memory])
 dst_1 = bin2dec(input_1[:, :num_concat_memory])
-print("dst_0: ", dst_0)
 
 # output
 out0 = np.mod(np.matmul(input_0, np.transpose(np.vstack((poly1, poly2)))), 2)
@@ -96,11 +95,18 @@ basis = np.arange(0, num_total_states, 2 ** code_config["bch_config"]["M"])
 num_workers = 8
 WBTBCCK1 = np.zeros(shape=(num_trellis_stages, num_workers, cwd_max_weight + 1))
 WBTBCCK2 = np.zeros(shape=(num_trellis_stages, num_workers, cwd_max_weight + 1))
+num_valid_starting_states_per_worker = int(num_valid_starting_states / num_workers)
 
 print(f"{num_trellis_stages}, {cwd_max_weight + 1}")
 
 for i_worker in range(0, num_workers):
-    for i_state in range(0, num_valid_starting_states, 8):
+    states_for_worker = basis[
+        i_worker
+        * num_valid_starting_states_per_worker : (i_worker + 1)
+        * num_valid_starting_states_per_worker
+    ]
+    print(f"i_worker: {i_worker}; states_for_worker: {states_for_worker}")
+    for state in states_for_worker:
         # states x weight
         x = np.zeros(shape=(num_total_states, cwd_max_weight + 1))
         y = np.zeros(shape=(num_total_states, cwd_max_weight + 1))
@@ -108,7 +114,7 @@ for i_worker in range(0, num_workers):
         inS = 1
         outS = 3
 
-        x[basis[i_state + i_worker], 0] = 1
+        x[state, 0] = 1
         k = 0
         for t in np.arange(0, num_trellis_stages):
 
@@ -117,17 +123,16 @@ for i_worker in range(0, num_workers):
                     x[dst_0[i], :inS], Wcoef0[i, :], mode="full"
                 ) + np.convolve(x[dst_1[i], :inS], Wcoef1[i, :], mode="full")
 
-            WBTBCCK1[t, i_worker, :] = (
-                WBTBCCK1[t, i_worker, :] + y[basis[i_state + i_worker], :]
-            )
+            WBTBCCK1[t, i_worker, :] += y[state, :]
 
+            # increment convolution input & output lengths
             inS = outS
             outS += 2
             k += 1
 
             if k == num_trellis_stages:
-                print(f"s: {i_state + i_worker}, state: {basis[i_state + i_worker]}")
-                print(f"quitting loop with t={t}")
+                # print(f"s: {i_state + i_worker}, state: {state}")
+                print(f"when quitting, t={t}")
                 break
 
             for i in np.arange(0, num_total_states):
@@ -135,15 +140,15 @@ for i_worker in range(0, num_workers):
                     y[dst_0[i], :inS], Wcoef0[i, :], mode="full"
                 ) + np.convolve(y[dst_1[i], :inS], Wcoef1[i, :], mode="full")
 
-            WBTBCCK2[t, i_worker, :] += x[basis[i_state + i_worker], :]
+            WBTBCCK2[t, i_worker, :] += x[state, :]
 
             inS = outS
             outS += 2
             k += 1
 
             if k == num_trellis_stages:
-                print(f"s: {i_state + i_worker}, state: {basis[i_state + i_worker]}")
-                print(f"quitting loop with t={t}")
+                # print(f"s: {i_state + i_worker}, state: {basis[i_state + i_worker]}")
+                print(f"when quitting, t={t}")
                 break
 
 BWs = np.zeros(shape=(num_trellis_stages, cwd_max_weight + 1))
@@ -154,6 +159,8 @@ h2 = np.arange(len(evenIdxs))
 
 BWs[oddIdxs, :] = np.sum(WBTBCCK1[h1, :, :], axis=1)
 BWs[evenIdxs, :] = np.sum(WBTBCCK2[h2, :, :], axis=1)
+print("WBTBCCK1 shape: ", WBTBCCK1.shape)
+print("WBTBCCK2 shape: ", WBTBCCK2.shape)
 
 np.set_printoptions(suppress=True)
 print("BW shape: ", BWs.shape)
