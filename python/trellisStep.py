@@ -60,11 +60,15 @@ def trellisStep(A, W, D):
 
 def main():
 
+    num_streams = 8
+    cuda_streams = [cuda.stream() for _ in range(num_streams)]
     rng = np.random.default_rng(seed=42)
     # create input A and transition matrix W and end-state matrix D
     A_x = 5
-    A_y = 8
-    A = rng.integers(low=0, high=6, size=(A_y, A_x)).astype(np.float64)
+    A_y = 64
+    As = []
+    for _ in range(num_streams):
+        As.append(rng.integers(low=0, high=6, size=(A_y, A_x)).astype(np.float64))
     # print("A:", A)
     W_x = 16
     W_y = A_y
@@ -76,75 +80,94 @@ def main():
     D = rng.integers(low=0, high=D_y, size=(D_y, D_x)).astype(np.float64)
     # print("D:", D)
 
-    num_iters = 25
+    num_iters = 50
 
     ## Ref
-    ref_result = A
-    for iter in range(num_iters):
-        ref_result = trellisStep(ref_result, W, D)
-    print("ref_result shape: ", ref_result.shape)
-    # print("ref_result: ", ref_result)
+    ref_result = []
+    for A in As:
+        cpu_result = A
+        for iter in range(num_iters):
+            cpu_result = trellisStep(cpu_result, W, D)
+        ref_result.append(cpu_result)
+    print("len(ref_result): ", len(ref_result))
 
     ## DUT
     # output shape
     O_z = W_z
     O_y = W_y
+    dut_result = []
 
-    # prepare ping-pong buffer at CPU
-    max_X = A.shape[1] + (W_x - 1) * num_iters
-    h_in_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float64)
-    h_in_buffer[0 : A.shape[0], 0 : A.shape[1]] = A
-    h_out_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float64)
+    for i_stream, A in enumerate(As):
 
-    # move ping-pong buffers to GPU
-    d_buffer_in = cuda.to_device(h_in_buffer)
-    d_buffer_out = cuda.to_device(h_out_buffer)
+        # assign current stream
+        curr_stream = cuda_streams[i_stream]
 
-    # moving W and D to GPU
-    d_W = cuda.to_device(W)
-    d_D = cuda.to_device(D)
+        # prepare ping-pong buffer at CPU
+        max_X = A.shape[1] + (W_x - 1) * num_iters
+        h_in_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float64)
+        h_in_buffer[0 : A.shape[0], 0 : A.shape[1]] = A
+        h_out_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float64)
 
-    # block and grid size allocation
-    threads_per_block = (8, 8, 2)
+        # move ping-pong buffers to GPU
+        d_buffer_in = cuda.to_device(h_in_buffer, stream=curr_stream)
+        d_buffer_out = cuda.to_device(h_out_buffer, stream=curr_stream)
 
-    A_shape = A.shape
-    for iter in range(num_iters):
-        # Calculate the output width
-        current_O_x = A_shape[1] + W_x - 1
+        # moving W and D to GPU
+        d_W = cuda.to_device(W, stream=curr_stream)
+        d_D = cuda.to_device(D, stream=curr_stream)
 
-        # 3. Dynamic Grid Calculation (based on logical output width)
-        grid_x = math.ceil(current_O_x / threads_per_block[0])
-        grid_y = math.ceil(O_y / threads_per_block[1])
-        grid_z = math.ceil(O_z / threads_per_block[2])
-        blocks_per_grid = (grid_x, grid_y, grid_z)
+        # block and grid size allocation
+        threads_per_block = (8, 8, 2)
 
-        # Zero the entire max buffer
-        d_buffer_out.copy_to_device(h_out_buffer)
+        A_shape = A.shape
 
-        # Kernel Launch
-        numba_trellisStep[blocks_per_grid, threads_per_block](
-            d_buffer_in, A_shape, d_W, d_D, d_buffer_out
-        )
+        for iter in range(num_iters):
+            # Calculate the output width
+            current_O_x = A_shape[1] + W_x - 1
 
-        # 7. The Swap (Variables now point to the other buffer)
-        d_buffer_in, d_buffer_out = d_buffer_out, d_buffer_in
+            # 3. Dynamic Grid Calculation (based on logical output width)
+            grid_x = math.ceil(current_O_x / threads_per_block[0])
+            grid_y = math.ceil(O_y / threads_per_block[1])
+            grid_z = math.ceil(O_z / threads_per_block[2])
+            blocks_per_grid = (grid_x, grid_y, grid_z)
 
-        # 8. Update the logical width for the NEXT iteration
-        A_shape = tuple((A_shape[0], current_O_x))
+            # Zero the entire max buffer
+            d_buffer_out.copy_to_device(h_out_buffer, stream=curr_stream)
 
-    dut_result = d_buffer_in.copy_to_host()
-    print("dut_result shape: ", dut_result.shape)
-    # print(dut_result)
+            # Kernel Launch
+            numba_trellisStep[blocks_per_grid, threads_per_block, curr_stream](
+                d_buffer_in, A_shape, d_W, d_D, d_buffer_out
+            )
+
+            # 7. The Swap (Variables now point to the other buffer)
+            d_buffer_in, d_buffer_out = d_buffer_out, d_buffer_in
+
+            # 8. Update the logical width for the NEXT iteration
+            A_shape = tuple((A_shape[0], current_O_x))
+
+        dut_result.append(d_buffer_in.copy_to_host(stream=curr_stream))
+
+    # synchronize all streams
+    cuda.synchronize()
+
+    print("len(dut_result): ", len(dut_result))
+    print("run finished!")
 
     ## Check
-    if np.allclose(dut_result, ref_result):
-        print("Success!")
-    else:
-        diff = np.abs(dut_result - ref_result)
-        max_diff = np.max(diff)
-        print(f"The maximum difference is: {max_diff}")
-        idx = np.unravel_index(np.argmax(diff), diff.shape)
-        print(f"Location of max difference: {idx}")
+    assert len(ref_result) == len(dut_result)
+    for i_out in range(len(ref_result)):
+        assert ref_result[i_out].shape == dut_result[i_out].shape
+
+        if np.allclose(dut_result[i_out], ref_result[i_out]):
+            print(
+                f"Success stream {i_out}!",
+            )
+        else:
+            diff = np.abs(dut_result - ref_result)
+            max_diff = np.max(diff)
+            print(f"The maximum difference is: {max_diff}")
+            idx = np.unravel_index(np.argmax(diff), diff.shape)
+            print(f"Location of max difference: {idx}")
 
 
 if __name__ == "__main__":
