@@ -1,8 +1,6 @@
 import math
 import numpy as np
 from numba import cuda
-from setup import setup_A_W_D
-import argparse
 
 
 @cuda.jit
@@ -62,42 +60,41 @@ def trellisStep(A, W, D):
 
 def main():
 
-    # 1. Set up the argument parser
-    parser = argparse.ArgumentParser(description="Process some YAML configuration.")
-
-    # 2. Add the argument for the config file
-    parser.add_argument(
-        "config_path",
-        help="Path to the yaml configuration file (e.g., config/k11n30v6.yaml)",
-    )
-
-    # 3. Parse the arguments from the terminal
-    args = parser.parse_args()
-
-    As, W, D, basis, num_iters = setup_A_W_D(args.config_path)
-    num_streams = len(As)
+    num_streams = 8
     cuda_streams = [cuda.stream() for _ in range(num_streams)]
     rng = np.random.default_rng(seed=42)
+    # create input A and transition matrix W and end-state matrix D
+    A_x = 5
+    A_y = 1024
+    As = []
+    for _ in range(num_streams):
+        As.append(rng.integers(low=0, high=6, size=(A_y, A_x)).astype(np.float64))
+    # print("A:", A)
+    W_x = 16
+    W_y = A_y
+    W_z = 4
+    W = rng.integers(low=0, high=6, size=(W_z, W_y, W_x)).astype(np.float64)
+    # print("W:", W)
+    D_x = W_z
+    D_y = A_y
+    D = rng.integers(low=0, high=D_y, size=(D_y, D_x)).astype(np.float64)
+    # print("D:", D)
+
+    num_iters = 50
 
     ## Ref
-    # ref_result = []
-    # for A in As:
-    #     cpu_result = A
-    #     for iter in range(num_iters):
-    #         cpu_result = trellisStep(cpu_result, W, D)
-    #     ref_result.append(cpu_result)
-    # print("len(ref_result): ", len(ref_result))
-    # print("ref_result[0] shape: ", ref_result[0].shape)
-    # cpu_distance_spectrum = np.zeros_like(ref_result[0][0])
-    # for i_vss, valid_starting_state in enumerate(basis):
-    #     cpu_distance_spectrum += ref_result[i_vss][valid_starting_state, :]
-    # print("cpu_distance_spectrum: ", cpu_distance_spectrum)
+    ref_result = []
+    for A in As:
+        cpu_result = A
+        for iter in range(num_iters):
+            cpu_result = trellisStep(cpu_result, W, D)
+        ref_result.append(cpu_result)
+    print("len(ref_result): ", len(ref_result))
 
     ## DUT
     # output shape
-    W_x = W.shape[2]
-    O_z = W.shape[0]
-    O_y = W.shape[1]
+    O_z = W_z
+    O_y = W_y
     dut_result = []
 
     for i_stream, A in enumerate(As):
@@ -120,7 +117,7 @@ def main():
         d_D = cuda.to_device(D, stream=curr_stream)
 
         # block and grid size allocation
-        threads_per_block = (16, 16, 2)
+        threads_per_block = (8, 16, 2)
 
         A_shape = A.shape
 
@@ -154,27 +151,22 @@ def main():
     cuda.synchronize()
 
     print("len(dut_result): ", len(dut_result))
-    gpu_distance_spectrum = np.zeros_like(dut_result[0][0])
-    for i_vss, valid_starting_state in enumerate(basis):
-        gpu_distance_spectrum += dut_result[i_vss][valid_starting_state, :]
-    np.set_printoptions(suppress=True, precision=0)
-    print("gpu_distance_spectrum: ", gpu_distance_spectrum)
 
     ## Check
-    # assert len(ref_result) == len(dut_result)
-    # for i_out in range(len(ref_result)):
-    #     assert ref_result[i_out].shape == dut_result[i_out].shape
+    assert len(ref_result) == len(dut_result)
+    for i_out in range(len(ref_result)):
+        assert ref_result[i_out].shape == dut_result[i_out].shape
 
-    #     if np.allclose(dut_result[i_out], ref_result[i_out]):
-    #         print(
-    #             f"Success stream {i_out}!",
-    #         )
-    #     else:
-    #         diff = np.abs(dut_result - ref_result)
-    #         max_diff = np.max(diff)
-    #         print(f"The maximum difference is: {max_diff}")
-    #         idx = np.unravel_index(np.argmax(diff), diff.shape)
-    #         print(f"Location of max difference: {idx}")
+        if np.allclose(dut_result[i_out], ref_result[i_out]):
+            print(
+                f"Success stream {i_out}!",
+            )
+        else:
+            diff = np.abs(dut_result - ref_result)
+            max_diff = np.max(diff)
+            print(f"The maximum difference is: {max_diff}")
+            idx = np.unravel_index(np.argmax(diff), diff.shape)
+            print(f"Location of max difference: {idx}")
 
 
 if __name__ == "__main__":

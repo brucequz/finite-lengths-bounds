@@ -1,10 +1,8 @@
 import numpy as np
-import numpy as np
+import scipy.linalg as la
 import yaml
 import argparse
 import sys
-from build import cuda_kernels
-from cu_dsu import run_numba_merge
 
 
 def octal_to_binary_list(octal_str):
@@ -27,26 +25,14 @@ def bin2dec(binary):
     ]
 
 
-def main():
-
-    # 1. Set up the argument parser
-    parser = argparse.ArgumentParser(description="Process some YAML configuration.")
-
-    # 2. Add the argument for the config file
-    parser.add_argument(
-        "config_path",
-        help="Path to the yaml configuration file (e.g., config/k11n30v6.yaml)",
-    )
-
-    # 3. Parse the arguments from the terminal
-    args = parser.parse_args()
+def setup_A_W_D(path):
 
     try:
-        with open(args.config_path, "r") as f:
+        with open(path, "r") as f:
             code_config = yaml.safe_load(f)
-        print(f"Successfully loaded: {args.config_path}")
+        print(f"Successfully loaded: {path}")
     except FileNotFoundError:
-        print(f"Error: The file '{args.config_path}' was not found.")
+        print(f"Error: The file '{path}' was not found.")
         sys.exit(1)
 
     nu = code_config["tbcc_config"]["V"]
@@ -78,8 +64,8 @@ def main():
     v_ones = np.ones(shape=(num_total_states, 1))
     input_0 = np.hstack((v_zeros, states_matrix))
     input_1 = np.hstack((v_ones, states_matrix))
-    dst_0 = bin2dec(input_0[:, :num_concat_memory])
-    dst_1 = bin2dec(input_1[:, :num_concat_memory])
+    dst_0 = np.array(bin2dec(input_0[:, :num_concat_memory]))
+    dst_1 = np.array(bin2dec(input_1[:, :num_concat_memory]))
 
     # output
     out0 = np.mod(np.matmul(input_0, np.transpose(np.vstack((poly1, poly2)))), 2)
@@ -101,44 +87,24 @@ def main():
         (zidx1, np.array([[int(bit) for bit in s] for s in Wout1_str])), axis=1
     )
 
+    # set up A
+    # A_in: [num_states] x [max weight up to this meta-stage]
     basis = np.arange(0, num_total_states, 2 ** code_config["bch_config"]["M"])
+    As = []
+    for valid_starting_state in basis:
+        A = np.zeros(shape=(num_total_states, 1), dtype=np.float64)
+        A[valid_starting_state] = 1
+        As.append(A)
+    print("As length: ", len(As))
 
-    num_workers = 8
-    WBTBCCK1 = np.zeros(shape=(num_trellis_stages, num_workers, cwd_max_weight + 1))
-    WBTBCCK2 = np.zeros(shape=(num_trellis_stages, num_workers, cwd_max_weight + 1))
-    num_valid_starting_states_per_worker = int(num_valid_starting_states / num_workers)
+    # set up W
+    # W_in: [input] x [num_states] x [max weight for one meta-stage]
+    W = np.stack((Wcoef0, Wcoef1), axis=0).astype(np.float64)  # horizontal stack
+    print("W.shape: ", W.shape)
 
-    # fill in A_1
-    A_1 = np.zeros(shape=(num_total_states, num_total_states, 3))
-    for i_b in np.arange(0, num_total_states):
-        A_1[i_b, dst_0[i_b], :] = Wcoef0[i_b, :]
-        A_1[i_b, dst_1[i_b], :] = Wcoef1[i_b, :]
+    # set up D
+    # D_in: [num_states] x [input]
+    D = np.stack((dst_0, dst_1), axis=1).astype(np.float64)
+    print("D shape: ", D.shape)
 
-    print("A_1 finished")
-    print(A_1.shape)
-
-    A_2 = run_numba_merge(A_1, A_1)
-    print("A_2 finished")
-    A_3 = run_numba_merge(A_1, A_2)
-    print("A_3 finished")
-    A_4 = run_numba_merge(A_2, A_2)
-    print("A_4 finished")
-    A_8 = run_numba_merge(A_4, A_4)
-    print("A_8 finished")
-
-    # Send to GPU and get result back
-    dut_result = cuda_kernels.square_array(A_8, A_4)
-    # print("dut_result: ", dut_result)
-    print("dut_result shape: ", dut_result.shape)
-
-    A_12 = run_numba_merge(A_8, A_4)
-    # print("A_2: ", A_2)
-    print("A_2 shape: ", A_2.shape)
-
-    verdict = np.allclose(dut_result, A_12)
-
-    print(f"final verdict:  {verdict}")
-
-
-if __name__ == "__main__":
-    main()
+    return As, W, D, basis, num_trellis_stages
