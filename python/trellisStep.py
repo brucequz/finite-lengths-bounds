@@ -1,3 +1,5 @@
+import sys
+import yaml
 import math
 import numpy as np
 from numba import cuda
@@ -50,7 +52,7 @@ def trellisStep(A, W, D):
     O_z = W_z
     O_y = W_y
     O_x = A_x + W_x - 1
-    O = np.zeros(shape=(O_z, O_y, O_x), dtype=np.float64)
+    O = np.zeros(shape=(O_z, O_y, O_x), dtype=np.float32)
     for c in range(O_z):
         for y in range(O_y):
             end_state = int(D[y, c])
@@ -73,6 +75,15 @@ def main():
 
     # 3. Parse the arguments from the terminal
     args = parser.parse_args()
+
+    try:
+        with open(args.config_path, "r") as f:
+            code_config = yaml.safe_load(f)
+        print(f"Successfully loaded: {args.config_path}")
+    except FileNotFoundError:
+        print(f"Error: The file '{args.config_path}' was not found.")
+        sys.exit(1)
+    output_file_name = code_config["output_file_name"]
 
     As, W, D, basis, num_iters = setup_A_W_D(args.config_path)
     num_streams = len(As)
@@ -107,20 +118,21 @@ def main():
 
         # prepare ping-pong buffer at CPU
         max_X = A.shape[1] + (W_x - 1) * num_iters
-        h_in_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float64)
+        h_in_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float32)
         h_in_buffer[0 : A.shape[0], 0 : A.shape[1]] = A
-        h_out_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float64)
+        h_out_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float32)
 
         # move ping-pong buffers to GPU
         d_buffer_in = cuda.to_device(h_in_buffer, stream=curr_stream)
         d_buffer_out = cuda.to_device(h_out_buffer, stream=curr_stream)
+        d_buffer_allzero = cuda.to_device(h_out_buffer, stream=curr_stream)
 
         # moving W and D to GPU
         d_W = cuda.to_device(W, stream=curr_stream)
         d_D = cuda.to_device(D, stream=curr_stream)
 
         # block and grid size allocation
-        threads_per_block = (16, 16, 2)
+        threads_per_block = (4, 64, 2)
 
         A_shape = A.shape
 
@@ -134,8 +146,8 @@ def main():
             grid_z = math.ceil(O_z / threads_per_block[2])
             blocks_per_grid = (grid_x, grid_y, grid_z)
 
-            # Zero the entire max buffer
-            d_buffer_out.copy_to_device(h_out_buffer, stream=curr_stream)
+            # Zero the entire max buffer with an all-zero array already on device
+            d_buffer_out.copy_to_device(d_buffer_allzero)
 
             # Kernel Launch
             numba_trellisStep[blocks_per_grid, threads_per_block, curr_stream](
@@ -157,8 +169,9 @@ def main():
     gpu_distance_spectrum = np.zeros_like(dut_result[0][0])
     for i_vss, valid_starting_state in enumerate(basis):
         gpu_distance_spectrum += dut_result[i_vss][valid_starting_state, :]
-    np.set_printoptions(suppress=True, precision=0)
+    np.set_printoptions(suppress=False, precision=6)
     print("gpu_distance_spectrum: ", gpu_distance_spectrum)
+    np.save("output/" + output_file_name, gpu_distance_spectrum)
 
     ## Check
     # assert len(ref_result) == len(dut_result)

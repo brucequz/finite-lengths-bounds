@@ -1,0 +1,19 @@
+bch_config:
+  K: 31
+  N: 31
+  M: 0
+  polynomial: "1"
+
+
+tbcc_config:
+  K: 31
+  N: 62
+  V: 6
+  gen_poly_1: "133"
+  gen_poly_2: "171"
+
+output_file_name: "k31n62v6_dist_spectrum.npy"
+
+# Metadata
+version: 1.0
+

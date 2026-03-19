@@ -92,19 +92,19 @@ def setup_A_W_D(path):
     basis = np.arange(0, num_total_states, 2 ** code_config["bch_config"]["M"])
     As = []
     for valid_starting_state in basis:
-        A = np.zeros(shape=(num_total_states, 1), dtype=np.float64)
+        A = np.zeros(shape=(num_total_states, 1), dtype=np.float32)
         A[valid_starting_state] = 1
         As.append(A)
     print("As length: ", len(As))
 
     # set up W
     # W_in: [input] x [num_states] x [max weight for one meta-stage]
-    W = np.stack((Wcoef0, Wcoef1), axis=0).astype(np.float64)  # horizontal stack
+    W = np.stack((Wcoef0, Wcoef1), axis=0).astype(np.float32)  # horizontal stack
     print("W.shape: ", W.shape)
 
     # set up D
     # D_in: [num_states] x [input]
-    D = np.stack((dst_0, dst_1), axis=1).astype(np.float64)
+    D = np.stack((dst_0, dst_1), axis=1).astype(np.float32)
     print("D shape: ", D.shape)
 
     return As, W, D, basis, num_trellis_stages
