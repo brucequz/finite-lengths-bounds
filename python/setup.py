@@ -92,19 +92,69 @@ def setup_A_W_D(path):
     basis = np.arange(0, num_total_states, 2 ** code_config["bch_config"]["M"])
     As = []
     for valid_starting_state in basis:
-        A = np.zeros(shape=(num_total_states, 1), dtype=np.float32)
+        A = np.zeros(shape=(num_total_states, 1), dtype=np.uint64)
         A[valid_starting_state] = 1
         As.append(A)
     print("As length: ", len(As))
 
     # set up W
     # W_in: [input] x [num_states] x [max weight for one meta-stage]
-    W = np.stack((Wcoef0, Wcoef1), axis=0).astype(np.float32)  # horizontal stack
+    W = np.stack((Wcoef0, Wcoef1), axis=0).astype(np.uint64)  # horizontal stack
     print("W.shape: ", W.shape)
 
     # set up D
     # D_in: [num_states] x [input]
-    D = np.stack((dst_0, dst_1), axis=1).astype(np.float32)
+    D = np.stack((dst_0, dst_1), axis=1).astype(np.uint64)
     print("D shape: ", D.shape)
 
     return As, W, D, basis, num_trellis_stages
+
+
+def computeMetaStage(W, D, dtype=np.uint64):
+    """
+    Join num_stages_combine basic stages together into a meta-stage.
+    The
+
+    Args:
+        - W: [num_inputs, num_states, max_weight with 1 stage]
+        - D: [num_states, num_inputs]
+
+    Outs:
+        - newW: [num_states, num_states, max_weight with meta-stage]
+        - newD: [num_states, 2^num_stages_combine]
+
+    """
+    assert W.shape[0] == D.shape[1]
+    num_inputs = W.shape[0]
+    num_states = W.shape[1]
+    curr_max_weight = W.shape[2]
+
+    # Compute newW
+    newW = np.zeros(
+        shape=(num_states, num_states, 2 * curr_max_weight - 1), dtype=dtype
+    )
+    newD = np.zeros(shape=(num_states, num_inputs**2), dtype=dtype)
+
+    for i_b in range(num_states):
+        for i_first_input in range(num_inputs):
+            # compute mid state after first meta-stage transition
+            mid_state = int(D[i_b, i_first_input])
+
+            for i_second_input in range(num_inputs):
+                # compute end state after the second meta-stage transition
+                end_state = int(D[mid_state, i_second_input])
+                newW[i_b, end_state, :] += np.convolve(
+                    W[i_first_input, i_b, :], W[i_second_input, mid_state, :]
+                )
+
+                # compute newD
+                shift_amt = np.log2(num_inputs)
+                concat_input = (int(i_first_input) << int(shift_amt)) | i_second_input
+                newD[i_b, concat_input] = end_state
+
+    layer_indices = np.arange(num_states)[:, np.newaxis]
+    newW = np.moveaxis(
+        newW[layer_indices, newD.astype(np.int32)], source=0, destination=1
+    )
+
+    return newW, newD

@@ -12,6 +12,7 @@ tbcc_config:
   gen_poly_1: "13"
   gen_poly_2: "17"
 
+output_file_name: "k1n22v3_dist_spectrum.npy"
 
 # Metadata
 version: 1.0

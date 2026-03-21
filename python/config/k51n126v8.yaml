@@ -2,7 +2,7 @@ bch_config:
   K: 51
   N: 63
   M: 12
-  polynomial: "1001110001101"
+  polynomial: "1011000111001"
 
 
 tbcc_config:
@@ -12,6 +12,7 @@ tbcc_config:
   gen_poly_1: "561"
   gen_poly_2: "753"
 
+output_file_name: "k51n126v8_dist_spectrum.npy"
 
 # Metadata
 version: 1.0
