@@ -1,46 +1,48 @@
 import numpy as np
 import yaml
-from setup import setup_A_W_D, computeMetaStage
+from setup import setup_A_W_D, setup_A_Wbit_D, computeMetaStage
+from step import trellisStep_conv
 import sys
 
 
-def bitwise_rotate_and_sum(arr, bit_control):
+def trellisStep_shift(ds, W, D, max_shift):
+    """Performs a trellis step using the shift method. A new ds variable is returned.
+
+    Args:
+        - ds: [num_states x max_weight] distance spectrum upto this trellis stage.
+        - W: [num_states x input] for each input and state, there is only 1 number
+        representing the weight of the trellis path.
+        - D: [num_states x input] destination state for each pair of input and incoming
+        state.
+        - max_shift: indicator for the increase in output ds dimension.
+
+    Output:
+        - newds: [num_states x (max_weight + max_shift)] distance spectrum after this trellis stage.
     """
-    Shifts the array to the right with zero-padding based on
-    the bit positions of bit_control and returns the sum.
-    """
-    result = np.zeros_like(arr, dtype=np.int64)
-    n = len(arr)
 
-    # Iterate through the bits of the control number
-    for i in range(bit_control.bit_length()):
-        if (bit_control >> i) & 1:
-            # We want a shift of 'i'. If your example 0101 means 1 and 3,
-            # use shift_amount = i + 1
-            shift_amount = i
+    old_ds_shape = ds.shape
+    num_states = old_ds_shape[0]
+    curr_max_weight = old_ds_shape[1]
+    new_max_weight = curr_max_weight + max_shift
+    newds = np.zeros(shape=(num_states, new_max_weight))
 
-            if shift_amount == 0:
-                result += arr
-            elif shift_amount < n:
-                # Create a shifted version with zero padding:
-                # [0, 0, ... , arr[0], arr[1], ...]
-                shifted = np.zeros_like(arr)
-                shifted[shift_amount:] = arr[:-shift_amount]
-                result += shifted
-            # If shift_amount >= n, the result is all zeros, so we do nothing
+    num_inputs = W.shape[1]
 
-    return result
+    # process for each input and incoming state
+    for i_begin_state in range(num_states):
+        for i_input in range(num_inputs):
+            shift_amt = W[i_begin_state, i_input]
+            dst_state = D[i_begin_state, i_input]
+            shifted_ds = np.zeros(shape=(new_max_weight,))
+            shifted_ds[shift_amt : shift_amt + curr_max_weight] = ds[i_begin_state, :]
+            newds[dst_state, :] += shifted_ds
+
+    return newds
 
 
 def main():
-    a = np.array([10, 20, 30, 40])
-    control = 5  # 0101
-    output = bitwise_rotate_and_sum(a, control)
-    print(f"Original: {a}")
 
-    print(f"Result:   {output}")
-
-    path = "config/k11n22v3.yaml"
+    path = "config/k11n30v6.yaml"
     try:
         with open(path, "r") as f:
             code_config = yaml.safe_load(f)
@@ -50,23 +52,32 @@ def main():
         sys.exit(1)
     output_file_name = code_config["output_file_name"]
 
+    As, W_weight, D, basis, num_trellis_stages = setup_A_Wbit_D(path)
     As, W, D, basis, num_trellis_stages = setup_A_W_D(path)
+    A = As[5]
 
-    print("W: ", W)
+    print("A shape: ", A.shape)
+    print("W shape: ", W.shape)
+    print("W_weight shape: ", W_weight.shape)
+    print("D shape: ", D.shape)
 
-    # compute meta stage
-    length_meta_stage = 2
-    metaW, metaD = W, D
-    for i_meta in range(int(np.log2(length_meta_stage))):
-        metaW, metaD = computeMetaStage(metaW, metaD)
-        metaW = np.ascontiguousarray(metaW)
-        metaD = np.ascontiguousarray(metaD)
-    W_z, W_y, W_x = W.shape
-    metaW_z, metaW_y, metaW_x = metaW.shape
+    ## Ref
+    # a single trellis Step
+    cpu_result = A
+    for iter in range(num_trellis_stages):
+        # a meta-stage trellis Step
+        cpu_result = trellisStep_conv(cpu_result, W, D)
+    print("conv result shape: ", cpu_result.shape)
 
-    print("metaW shape: ", metaW.shape)
-    print("metaD shape: ", metaD.shape)
-    print("metaW: ", metaW)
+    ## DUT
+    num_stages = 1
+    max_shift = 2 * num_stages
+    for i_step in range(num_trellis_stages):
+        A = trellisStep_shift(A, W_weight, D, max_shift)
+    print("final A shape: ", A.shape)
+
+    if np.allclose(A, cpu_result):
+        print("Success!")
 
 
 if __name__ == "__main__":

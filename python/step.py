@@ -1,8 +1,36 @@
 import numpy as np
-from numba import cuda
+
+# from numba import cuda
 
 
-@cuda.jit
+def trellisStep_conv(A, W, D):
+
+    A_x = A.shape[1]
+    A_y = A.shape[0]
+
+    W_z = W.shape[0]
+    W_y = W.shape[1]
+    W_x = W.shape[2]
+
+    D_y = D.shape[0]
+    D_x = D.shape[1]
+
+    O_z = W_z
+    O_y = W_y
+    O_x = A_x + W_x - 1
+    O = np.zeros(shape=(O_z, O_y, O_x), dtype=np.uint64)
+    for c in range(O_z):
+        # input
+        for y in range(O_y):
+            # state
+            end_state = int(D[y, c])
+            O[c, end_state, :] += np.convolve(A[y, :], W[c, y, :])
+
+    result = np.sum(O, axis=0)
+    return result
+
+
+# @cuda.jit
 def numba_trellisStep_conv(A_in, A_shape, W_in, D_in, out):
     """
     Computes trellis Step for one meta-stage. The previous distance spectrum is stored in A_in.
@@ -32,7 +60,7 @@ def numba_trellisStep_conv(A_in, A_shape, W_in, D_in, out):
         cuda.atomic.add(out, (end_state, x), tmp_sum)
 
 
-@cuda.jit
+# @cuda.jit
 def numba_sharedMem_trellisStep_conv(A_in, A_shape, W_in, D_in, out):
     """
     Computes trellis Step for one meta-stage. The previous distance spectrum is stored in A_in.
