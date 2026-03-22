@@ -4,37 +4,8 @@ import math
 import numpy as np
 from numba import cuda
 from setup import setup_A_W_D, computeMetaStage
+from step import numba_trellisStep_conv
 import argparse
-
-
-@cuda.jit
-def numba_trellisStep(A_in, A_shape, W_in, D_in, out):
-    """
-    Computes trellis Step for one meta-stage. The previous distance spectrum is stored in A_in.
-    The transition matrix for one meta-stage is stored in W_in with ending state queried from D_in.
-
-    Args:
-        A_in: [num_states] x [max weight up to this meta-stage]
-        W_in: [input] x [num_states] x [max weight for one meta-stage]
-        D_in: [num_states] x [input]
-
-    Out:
-        out: [num_states] x [max weight after this meta-stage]
-
-    z is along input, y is along num_states, and x is along weight
-    """
-    x, y, z = cuda.grid(3)
-
-    if z < W_in.shape[0] and y < W_in.shape[1] and x < (W_in.shape[2] + A_shape[1] - 1):
-        tmp_sum = 0.0
-        for j in range(A_shape[1]):
-            x_minus_j = x - j
-            if x_minus_j >= 0 and x_minus_j < W_in.shape[2]:
-                tmp_sum += W_in[z, y, x_minus_j] * A_in[y, j]
-
-        # Sum over all possible inputs
-        end_state = D_in[y, z]
-        cuda.atomic.add(out, (end_state, x), tmp_sum)
 
 
 def trellisStep(A, W, D):
@@ -148,7 +119,7 @@ def main():
         blocks_per_grid = (grid_x, grid_y, grid_z)
 
         ## leftover single-stage steps
-        numba_trellisStep[blocks_per_grid, threads_per_block, curr_stream](
+        numba_trellisStep_conv[blocks_per_grid, threads_per_block, curr_stream](
             d_buffer_in, A_shape, d_W, d_D, d_buffer_out
         )
 
@@ -174,7 +145,7 @@ def main():
             d_buffer_out.copy_to_device(d_buffer_allzero, stream=curr_stream)
 
             # Kernel Launch
-            numba_trellisStep[blocks_per_grid, threads_per_block, curr_stream](
+            numba_trellisStep_conv[blocks_per_grid, threads_per_block, curr_stream](
                 d_buffer_in, A_shape, d_metaW, d_metaD, d_buffer_out
             )
 

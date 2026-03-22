@@ -74,6 +74,8 @@ def setup_A_W_D(path):
     Wout1 = np.sum(out1, axis=1, dtype=np.int32)
     zidx0 = (Wout0 == 0).reshape(-1, 1)
     zidx1 = (Wout1 == 0).reshape(-1, 1)
+    W_weight = np.stack((Wout0, Wout1), axis=0).T.astype(np.uint8)
+    print("W_weight: ", W_weight)
 
     ## proto distance spectrum
     # [::-1] for the binary representation is for
