@@ -1,6 +1,5 @@
 import numpy as np
-
-# from numba import cuda
+from numba import cuda
 
 
 def trellisStep_conv(A, W, D):
@@ -30,7 +29,7 @@ def trellisStep_conv(A, W, D):
     return result
 
 
-# @cuda.jit
+@cuda.jit
 def numba_trellisStep_conv(A_in, A_shape, W_in, D_in, out):
     """
     Computes trellis Step for one meta-stage. The previous distance spectrum is stored in A_in.
@@ -60,24 +59,25 @@ def numba_trellisStep_conv(A_in, A_shape, W_in, D_in, out):
         cuda.atomic.add(out, (end_state, x), tmp_sum)
 
 
-# @cuda.jit
-def numba_sharedMem_trellisStep_conv(A_in, A_shape, W_in, D_in, out):
+@cuda.jit
+def numba_sharedMem_trellisStep_shift(A_in, A_shape, W_in, D_in, out):
     """
     Computes trellis Step for one meta-stage. The previous distance spectrum is stored in A_in.
-    The transition matrix for one meta-stage is stored in W_in with ending state queried from D_in.
+    The transition weight matrix for one meta-stage is stored in W_in with ending state queried from D_in.
     The required W_in and A_in segments are loaded in the shared memory.
 
-    The total number of states are separated into 2 segments, the first 2^(nu-1) states begin with a 0
-    in the MSB, while the second segment begin with a 1 in the MSB. We note that pairs of states from
-    those two segments arrive at the same ending state after the input. For example, state 000 and 100
-    both arrive at 000 after input = 0, and 001 after input = 1. Therefore, let's say the thread block
-    contains only 2 states in the y-direction, then we would load in A_in with state 000 and 100 into
-    shared memory. Correspondingly, the W_in for state 000 and 100 would be loaded to shared memory.
+    The first step is for each state to query the current distance spectrum from A_in, then query the weight
+    added with the current step from W_in. Each thread block should process 32 length in x-dimension (weight spectrum)
+    and 8 length in the number of states, and 2 in the number of inputs dimension. Overall, the shared memory required
+    for A_in is 32*8*2*8 = 4096 bytes for int64 and 32*8*2*16 = 8192 bytes for int128. The shared memory required for W_in
+    is 8*2*1 = 16 bytes. The shared memory required for D_in is 8*2*4 = 64 bytes.
 
+    Assumptions:
+    1. num_inputs is less than 32, the x-dimension of a thread block. The entire rows of W needs to be loaded for each block.
 
     Args:
         A_in: [num_states] x [max weight up to this meta-stage]
-        W_in: [input] x [num_states] x [max weight for one meta-stage]
+        W_in: [num_states] x [input]
         D_in: [num_states] x [input]
 
     Out:
@@ -92,45 +92,54 @@ def numba_sharedMem_trellisStep_conv(A_in, A_shape, W_in, D_in, out):
     ty = cuda.threadIdx.y
     tz = cuda.threadIdx.z
 
+    blockIdx_x = cuda.blockIdx.x
     blockIdx_y = cuda.blockIdx.y  # group idx that we are handling in this block
+    blockIdx_z = cuda.blockIdx.z
     blockDim_x = cuda.blockDim.x
     blockDim_y = cuda.blockDim.y  # number of states we are handling in this block
     blockDim_z = cuda.blockDim.z
     W_shape = W_in.shape
+    D_shape = D_in.shape
 
-    # Load W into shared memory
-    # the size should be [:] x [blockDim_y] x [:]
-    # the index should be [:, blockIdx_y * blockDim_y : (blockIdx_y+1) * blockDim_y, :]
-    shared_W = cuda.shared.array(shape=(2, 4, 8), dtype=np.float32)
-    if tz < W_shape[0] and y < W_shape[1] and tx < W_shape[2]:
-        shared_W[tz, ty, tx] = W_in[z, y, x]
+    ## Load W into shared memory
+    shared_W = cuda.shared.array(
+        shape=(8, 2), dtype=np.uint8
+    )  # 1 bytes for weight, support up to weight=255
+    if y < W_shape[0] and z < W_shape[1]:
+        shared_W[ty, tz] = W_in[y, z]
     cuda.syncthreads()
 
     # Modify W
-    if tz < W_shape[0] and y < W_shape[1] and tx < W_shape[2]:
-        shared_W[tz, ty, tx] += blockIdx_y
+    if ty < W_shape[0] and tz < W_shape[1]:
+        shared_W[ty, tz] += blockIdx_y
     cuda.syncthreads()
 
     # Move W from shared memory to global
-    if tz < W_shape[0] and y < W_shape[1] and tx < W_shape[2]:
-        W_in[z, y, x] = shared_W[tz, ty, tx]
+    if y < W_shape[0] and z < W_shape[1]:
+        W_in[y, z] = shared_W[ty, tz]
+    cuda.syncthreads()
 
-    # Load A into shared memory
-    # the size should be [blockDim_y] x [:]
-    # the index should be segment1: [blockIdx_y * (blockDim_y) : (blockIdx_y+1) * (blockDim_y) , :]
-    shared_A = cuda.shared.array(shape=(4, 8), dtype=np.float32)
+    ## Load D into shared memory
+    shared_D = cuda.shared.array(
+        shape=(8, 2), dtype=np.uint32
+    )  # 32 bits to support states up to 2^32-1
+    if y < D_shape[0] and z < D_shape[1]:
+        shared_D[ty, tz] = D_in[y, z]
+    cuda.syncthreads()
+
+    ## Load A into shared memory
+    shared_A = cuda.shared.array(shape=(32, 8), dtype=np.uint128)  # 64 bits or 128 bits
     if y < A_shape[0] and x < A_shape[1]:
         shared_A[ty, tx] = A_in[y, x]
     cuda.syncthreads()
 
-    # # Let's first compute one step, and just verifying the output weight spectrum at state 0
-    # if z < W_in.shape[0] and y < W_in.shape[1] and x < (W_in.shape[2] + A_shape[1] - 1):
-    #     tmp_sum = 0.0
-    #     for j in range(A_shape[1]):
-    #         x_minus_j = x - j
-    #         if x_minus_j >= 0 and x_minus_j < W_in.shape[2]:
-    #             tmp_sum += W_in[z, y, x_minus_j] * A_in[y, j]
+    # With each thread block, figure out the shift_amt and destination_state
+    shift_amt = shared_W[ty, tz]
+    dst_state = shared_D[ty, tz]
 
-    #     # Sum over all possible inputs
-    #     end_state = D_in[y, z]
-    #     cuda.atomic.add(out, (end_state, x), tmp_sum)
+    # find global output write location
+    shifted_x = x + shift_amt
+    if shifted_x < out.shape[1]:
+        # TODO: atomic operation support for uint64 and uint128.
+        # out[dst_state, x + shift_amt] += ...
+        pass

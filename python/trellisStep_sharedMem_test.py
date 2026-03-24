@@ -1,7 +1,7 @@
 import math
 import numpy as np
 from numba import cuda
-from step import numba_sharedMem_trellisStep_conv
+from step import numba_sharedMem_trellisStep_shift
 
 
 def trellisStep(A, W, D):
@@ -9,15 +9,14 @@ def trellisStep(A, W, D):
     A_x = A.shape[1]
     A_y = A.shape[0]
 
-    W_z = W.shape[0]
-    W_y = W.shape[1]
-    W_x = W.shape[2]
+    W_y = W.shape[0]
+    W_z = W.shape[1]
 
     D_y = D.shape[0]
     D_x = D.shape[1]
 
     # for every 4 states, add a different number to it
-    increments = np.arange(W_y) // 4
+    increments = np.arange(W_y) // 8
     result = W + increments[:, None]
 
     return result
@@ -33,12 +32,11 @@ def main():
     A_y = 8
     A = rng.integers(low=0, high=6, size=(A_y, A_x)).astype(np.float32)
     # print("A:", A)
-    W_x = 16
+    W_x = 32
     W_y = A_y
-    W_z = 4
-    W = rng.integers(low=0, high=6, size=(W_z, W_y, W_x)).astype(np.float32)
+    W = rng.integers(low=0, high=6, size=(W_y, W_x)).astype(np.float32)
     print("W:", W)
-    D_x = W_z
+    D_x = W_x
     D_y = A_y
     D = rng.integers(low=0, high=D_y, size=(D_y, D_x)).astype(np.float32)
     # print("D:", D)
@@ -51,8 +49,8 @@ def main():
 
     ## DUT
     # output shape
-    O_z = W_z
-    O_y = W_y
+    O_x = A_x + W_x - 1
+    O_y = A_y
 
     for i_stream in range(num_streams):
 
@@ -75,34 +73,16 @@ def main():
         d_D = cuda.to_device(D, stream=curr_stream)
 
         # block and grid size allocation
-        threads_per_block = (8, 4, 2)
+        threads_per_block = (32, 8, 2)
 
-        A_shape = A.shape
+        grid_x = math.ceil(O_x / threads_per_block[0])
+        grid_y = math.ceil(O_y / threads_per_block[1])
+        grid_z = math.ceil(W_x / threads_per_block[2])
+        blocks_per_grid = (grid_x, grid_y, grid_z)
 
-        for iter in range(num_iters):
-            # Calculate the output width
-            current_O_x = A_shape[1] + W_x - 1
-
-            # 3. Dynamic Grid Calculation (based on logical output width)
-            grid_x = math.ceil(W_x / threads_per_block[0])
-            grid_y = math.ceil(O_y / threads_per_block[1])
-            grid_z = math.ceil(O_z / threads_per_block[2])
-            blocks_per_grid = (grid_x, grid_y, grid_z)
-            print("blocks_per_grid: ", blocks_per_grid)
-
-            # Zero the entire max buffer
-            d_buffer_out.copy_to_device(d_buffer_allzero, stream=curr_stream)
-
-            # Kernel Launch
-            numba_sharedMem_trellisStep_conv[
-                blocks_per_grid, threads_per_block, curr_stream
-            ](d_buffer_in, A_shape, d_W, d_D, d_buffer_out)
-
-            # 7. The Swap (Variables now point to the other buffer)
-            d_buffer_in, d_buffer_out = d_buffer_out, d_buffer_in
-
-            # 8. Update the logical width for the NEXT iteration
-            A_shape = tuple((A_shape[0], current_O_x))
+        numba_sharedMem_trellisStep_shift[
+            blocks_per_grid, threads_per_block, curr_stream
+        ](d_buffer_in, h_in_buffer.shape, d_W, d_D, d_buffer_out)
 
     # synchronize all streams
     cuda.synchronize()
