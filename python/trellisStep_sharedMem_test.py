@@ -1,55 +1,64 @@
 import math
 import numpy as np
+import yaml
+import sys
 from numba import cuda
-from step import numba_sharedMem_trellisStep_shift
+from setup import setup_A_W_D, setup_A_Wbit_D
+from step import trellisStep_shift, numba_sharedMem_trellisStep_shift
 
 
-def trellisStep(A, W, D):
+# def trellisStep(A, W, D):
 
-    A_x = A.shape[1]
-    A_y = A.shape[0]
+#     A_x = A.shape[1]
+#     A_y = A.shape[0]
 
-    W_y = W.shape[0]
-    W_z = W.shape[1]
+#     W_y = W.shape[0]
+#     W_z = W.shape[1]
 
-    D_y = D.shape[0]
-    D_x = D.shape[1]
+#     D_y = D.shape[0]
+#     D_x = D.shape[1]
 
-    # for every 4 states, add a different number to it
-    increments = np.arange(W_y) // 8
-    result = W + increments[:, None]
+#     # for every 4 states, add a different number to it
+#     increments = np.arange(W_y) // 8
+#     result = W + increments[:, None]
 
-    return result
+#     return result
 
 
 def main():
 
-    num_streams = 1
-    cuda_streams = [cuda.stream() for _ in range(num_streams)]
-    rng = np.random.default_rng(seed=42)
-    # create input A and transition matrix W and end-state matrix D
-    A_x = 5
-    A_y = 8
-    A = rng.integers(low=0, high=6, size=(A_y, A_x)).astype(np.float32)
-    # print("A:", A)
-    W_x = 32
-    W_y = A_y
-    W = rng.integers(low=0, high=6, size=(W_y, W_x)).astype(np.float32)
-    print("W:", W)
-    D_x = W_x
-    D_y = A_y
-    D = rng.integers(low=0, high=D_y, size=(D_y, D_x)).astype(np.float32)
-    # print("D:", D)
+    path = "config/k11n30v6.yaml"
+    try:
+        with open(path, "r") as f:
+            code_config = yaml.safe_load(f)
+        print(f"Successfully loaded: {path}")
+    except FileNotFoundError:
+        print(f"Error: The file '{path}' was not found.")
+        sys.exit(1)
+    output_file_name = code_config["output_file_name"]
 
-    num_iters = 1
+    As, W_weight, D, basis, num_trellis_stages = setup_A_Wbit_D(path)
+    A = As[5]
+
+    num_stages = 1
+    max_shift_per_stage = 2
+    overall_max_shift = num_stages * max_shift_per_stage
 
     ## Ref
-    ref_result = trellisStep(A, W, D)
-    print("ref_result: ", ref_result)
+    ref_result = A
+    for i_stage in range(num_stages):
+        ref_result = trellisStep_shift(ref_result, W_weight, D, max_shift_per_stage)
+    print("ref_result shape: ", ref_result.shape)
+    print("ref_result: \n", ref_result)
 
     ## DUT
+    num_streams = 1
+    cuda_streams = [cuda.stream() for _ in range(num_streams)]
+    A_y, A_x = A.shape
+    W_y, W_z = W_weight.shape
+
     # output shape
-    O_x = A_x + W_x - 1
+    O_x = A_x + overall_max_shift
     O_y = A_y
 
     for i_stream in range(num_streams):
@@ -58,7 +67,7 @@ def main():
         curr_stream = cuda_streams[i_stream]
 
         # prepare ping-pong buffer at CPU
-        max_X = A.shape[1] + (W_x - 1) * num_iters
+        max_X = A_x + (max_shift_per_stage) * num_stages
         h_in_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float64)
         h_in_buffer[0 : A.shape[0], 0 : A.shape[1]] = A
         h_out_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float64)
@@ -69,7 +78,7 @@ def main():
         d_buffer_allzero = cuda.to_device(h_out_buffer, stream=curr_stream)
 
         # moving W and D to GPU
-        d_W = cuda.to_device(W, stream=curr_stream)
+        d_W = cuda.to_device(W_weight, stream=curr_stream)
         d_D = cuda.to_device(D, stream=curr_stream)
 
         # block and grid size allocation
@@ -77,18 +86,20 @@ def main():
 
         grid_x = math.ceil(O_x / threads_per_block[0])
         grid_y = math.ceil(O_y / threads_per_block[1])
-        grid_z = math.ceil(W_x / threads_per_block[2])
+        grid_z = math.ceil(W_z / threads_per_block[2])
         blocks_per_grid = (grid_x, grid_y, grid_z)
 
         numba_sharedMem_trellisStep_shift[
             blocks_per_grid, threads_per_block, curr_stream
         ](d_buffer_in, h_in_buffer.shape, d_W, d_D, d_buffer_out)
 
+        d_buffer_in, d_buffer_out = d_buffer_out, d_buffer_in
+
     # synchronize all streams
     cuda.synchronize()
 
-    dut_result = d_W.copy_to_host()
-    print("dut_result: ", dut_result)
+    dut_result = d_buffer_in.copy_to_host()
+    print("dut_result shape: ", dut_result.shape)
 
     ## Check
     assert ref_result.shape == dut_result.shape

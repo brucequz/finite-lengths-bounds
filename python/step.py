@@ -59,6 +59,41 @@ def numba_trellisStep_conv(A_in, A_shape, W_in, D_in, out):
         cuda.atomic.add(out, (end_state, x), tmp_sum)
 
 
+def trellisStep_shift(ds, W, D, max_shift):
+    """Performs a trellis step using the shift method. A new ds variable is returned.
+
+    Args:
+        - ds: [num_states x max_weight] distance spectrum upto this trellis stage.
+        - W: [num_states x input] for each input and state, there is only 1 number
+        representing the weight of the trellis path.
+        - D: [num_states x input] destination state for each pair of input and incoming
+        state.
+        - max_shift: indicator for the increase in output ds dimension.
+
+    Output:
+        - newds: [num_states x (max_weight + max_shift)] distance spectrum after this trellis stage.
+    """
+
+    old_ds_shape = ds.shape
+    num_states = old_ds_shape[0]
+    curr_max_weight = old_ds_shape[1]
+    new_max_weight = curr_max_weight + max_shift
+    newds = np.zeros(shape=(num_states, new_max_weight))
+
+    num_inputs = W.shape[1]
+
+    # process for each input and incoming state
+    for i_begin_state in range(num_states):
+        for i_input in range(num_inputs):
+            shift_amt = W[i_begin_state, i_input]
+            dst_state = D[i_begin_state, i_input]
+            shifted_ds = np.zeros(shape=(new_max_weight,))
+            shifted_ds[shift_amt : shift_amt + curr_max_weight] = ds[i_begin_state, :]
+            newds[dst_state, :] += shifted_ds
+
+    return newds
+
+
 @cuda.jit
 def numba_sharedMem_trellisStep_shift(A_in, A_shape, W_in, D_in, out):
     """
@@ -71,9 +106,6 @@ def numba_sharedMem_trellisStep_shift(A_in, A_shape, W_in, D_in, out):
     and 8 length in the number of states, and 2 in the number of inputs dimension. Overall, the shared memory required
     for A_in is 32*8*2*8 = 4096 bytes for int64 and 32*8*2*16 = 8192 bytes for int128. The shared memory required for W_in
     is 8*2*1 = 16 bytes. The shared memory required for D_in is 8*2*4 = 64 bytes.
-
-    Assumptions:
-    1. num_inputs is less than 32, the x-dimension of a thread block. The entire rows of W needs to be loaded for each block.
 
     Args:
         A_in: [num_states] x [max weight up to this meta-stage]
@@ -109,15 +141,15 @@ def numba_sharedMem_trellisStep_shift(A_in, A_shape, W_in, D_in, out):
         shared_W[ty, tz] = W_in[y, z]
     cuda.syncthreads()
 
-    # Modify W
-    if ty < W_shape[0] and tz < W_shape[1]:
-        shared_W[ty, tz] += blockIdx_y
-    cuda.syncthreads()
+    # # Modify W
+    # if ty < W_shape[0] and tz < W_shape[1]:
+    #     shared_W[ty, tz] += blockIdx_y
+    # cuda.syncthreads()
 
-    # Move W from shared memory to global
-    if y < W_shape[0] and z < W_shape[1]:
-        W_in[y, z] = shared_W[ty, tz]
-    cuda.syncthreads()
+    # # Move W from shared memory to global
+    # if y < W_shape[0] and z < W_shape[1]:
+    #     W_in[y, z] = shared_W[ty, tz]
+    # cuda.syncthreads()
 
     ## Load D into shared memory
     shared_D = cuda.shared.array(
@@ -128,7 +160,7 @@ def numba_sharedMem_trellisStep_shift(A_in, A_shape, W_in, D_in, out):
     cuda.syncthreads()
 
     ## Load A into shared memory
-    shared_A = cuda.shared.array(shape=(32, 8), dtype=np.uint128)  # 64 bits or 128 bits
+    shared_A = cuda.shared.array(shape=(32, 8), dtype=np.uint32)  # 64 bits or 128 bits
     if y < A_shape[0] and x < A_shape[1]:
         shared_A[ty, tx] = A_in[y, x]
     cuda.syncthreads()
@@ -140,6 +172,4 @@ def numba_sharedMem_trellisStep_shift(A_in, A_shape, W_in, D_in, out):
     # find global output write location
     shifted_x = x + shift_amt
     if shifted_x < out.shape[1]:
-        # TODO: atomic operation support for uint64 and uint128.
-        # out[dst_state, x + shift_amt] += ...
-        pass
+        cuda.atomic.add(out, (dst_state, shifted_x), shared_A[ty, tx])
