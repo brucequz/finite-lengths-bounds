@@ -27,7 +27,7 @@ from step import trellisStep_shift, numba_sharedMem_trellisStep_shift
 
 def main():
 
-    path = "config/k11n30v6.yaml"
+    path = "config/k11n22v3.yaml"
     try:
         with open(path, "r") as f:
             code_config = yaml.safe_load(f)
@@ -40,7 +40,10 @@ def main():
     As, W_weight, D, basis, num_trellis_stages = setup_A_Wbit_D(path)
     A = As[5]
 
-    num_stages = 1
+    print("W_weight: \n", W_weight)
+    print("D: \n", D)
+
+    num_stages = 10
     max_shift_per_stage = 2
     overall_max_shift = num_stages * max_shift_per_stage
 
@@ -54,12 +57,12 @@ def main():
     ## DUT
     num_streams = 1
     cuda_streams = [cuda.stream() for _ in range(num_streams)]
-    A_y, A_x = A.shape
+    A_shape = A.shape
     W_y, W_z = W_weight.shape
 
     # output shape
-    O_x = A_x + overall_max_shift
-    O_y = A_y
+    O_x = A_shape[1]
+    O_y = A_shape[0]
 
     for i_stream in range(num_streams):
 
@@ -67,7 +70,7 @@ def main():
         curr_stream = cuda_streams[i_stream]
 
         # prepare ping-pong buffer at CPU
-        max_X = A_x + (max_shift_per_stage) * num_stages
+        max_X = A_shape[1] + (max_shift_per_stage) * num_stages
         h_in_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float64)
         h_in_buffer[0 : A.shape[0], 0 : A.shape[1]] = A
         h_out_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float64)
@@ -82,24 +85,33 @@ def main():
         d_D = cuda.to_device(D, stream=curr_stream)
 
         # block and grid size allocation
-        threads_per_block = (32, 8, 2)
+        threads_per_block = (32, 32, 1)
 
-        grid_x = math.ceil(O_x / threads_per_block[0])
-        grid_y = math.ceil(O_y / threads_per_block[1])
-        grid_z = math.ceil(W_z / threads_per_block[2])
-        blocks_per_grid = (grid_x, grid_y, grid_z)
+        for i_stage in range(num_stages):
+            O_x += max_shift_per_stage
 
-        numba_sharedMem_trellisStep_shift[
-            blocks_per_grid, threads_per_block, curr_stream
-        ](d_buffer_in, h_in_buffer.shape, d_W, d_D, d_buffer_out)
+            grid_x = math.ceil(O_x / threads_per_block[0])
+            grid_y = math.ceil(O_y / threads_per_block[1])
+            grid_z = math.ceil(W_z / threads_per_block[2])
+            blocks_per_grid = (grid_x, grid_y, grid_z)
 
-        d_buffer_in, d_buffer_out = d_buffer_out, d_buffer_in
+            # Zero the entire max buffer
+            d_buffer_out.copy_to_device(d_buffer_allzero, stream=curr_stream)
+
+            numba_sharedMem_trellisStep_shift[
+                blocks_per_grid, threads_per_block, curr_stream
+            ](d_buffer_in, A_shape, d_W, d_D, d_buffer_out)
+
+            d_buffer_in, d_buffer_out = d_buffer_out, d_buffer_in
+
+            A_shape = tuple((A_shape[0], O_x))
 
     # synchronize all streams
     cuda.synchronize()
 
     dut_result = d_buffer_in.copy_to_host()
     print("dut_result shape: ", dut_result.shape)
+    print("dut_result: \n", dut_result)
 
     ## Check
     assert ref_result.shape == dut_result.shape

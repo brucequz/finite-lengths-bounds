@@ -103,9 +103,9 @@ def numba_sharedMem_trellisStep_shift(A_in, A_shape, W_in, D_in, out):
 
     The first step is for each state to query the current distance spectrum from A_in, then query the weight
     added with the current step from W_in. Each thread block should process 32 length in x-dimension (weight spectrum)
-    and 8 length in the number of states, and 2 in the number of inputs dimension. Overall, the shared memory required
-    for A_in is 32*8*2*8 = 4096 bytes for int64 and 32*8*2*16 = 8192 bytes for int128. The shared memory required for W_in
-    is 8*2*1 = 16 bytes. The shared memory required for D_in is 8*2*4 = 64 bytes.
+    and 32 states, and 1 in the number of inputs dimension. Overall, the shared memory required
+    for A_in is 32*32*1*8 = 8192 bytes for int64 and 32*32*1*16 = 16384 bytes for int128. The shared memory required for W_in
+    is 32*1*1 = 32 bytes. The shared memory required for D_in is 32*1*4 = 128 bytes.
 
     Args:
         A_in: [num_states] x [max weight up to this meta-stage]
@@ -123,44 +123,29 @@ def numba_sharedMem_trellisStep_shift(A_in, A_shape, W_in, D_in, out):
     tx = cuda.threadIdx.x
     ty = cuda.threadIdx.y
     tz = cuda.threadIdx.z
-
-    blockIdx_x = cuda.blockIdx.x
-    blockIdx_y = cuda.blockIdx.y  # group idx that we are handling in this block
-    blockIdx_z = cuda.blockIdx.z
-    blockDim_x = cuda.blockDim.x
-    blockDim_y = cuda.blockDim.y  # number of states we are handling in this block
-    blockDim_z = cuda.blockDim.z
     W_shape = W_in.shape
     D_shape = D_in.shape
 
     ## Load W into shared memory
     shared_W = cuda.shared.array(
-        shape=(8, 2), dtype=np.uint8
+        shape=(32, 1), dtype=np.uint8
     )  # 1 bytes for weight, support up to weight=255
     if y < W_shape[0] and z < W_shape[1]:
         shared_W[ty, tz] = W_in[y, z]
     cuda.syncthreads()
 
-    # # Modify W
-    # if ty < W_shape[0] and tz < W_shape[1]:
-    #     shared_W[ty, tz] += blockIdx_y
-    # cuda.syncthreads()
-
-    # # Move W from shared memory to global
-    # if y < W_shape[0] and z < W_shape[1]:
-    #     W_in[y, z] = shared_W[ty, tz]
-    # cuda.syncthreads()
-
     ## Load D into shared memory
     shared_D = cuda.shared.array(
-        shape=(8, 2), dtype=np.uint32
+        shape=(32, 1), dtype=np.uint32
     )  # 32 bits to support states up to 2^32-1
     if y < D_shape[0] and z < D_shape[1]:
         shared_D[ty, tz] = D_in[y, z]
     cuda.syncthreads()
 
     ## Load A into shared memory
-    shared_A = cuda.shared.array(shape=(32, 8), dtype=np.uint32)  # 64 bits or 128 bits
+    shared_A = cuda.shared.array(
+        shape=(32, 32), dtype=np.float64
+    )  # 64 bits or 128 bits
     if y < A_shape[0] and x < A_shape[1]:
         shared_A[ty, tx] = A_in[y, x]
     cuda.syncthreads()
@@ -170,6 +155,6 @@ def numba_sharedMem_trellisStep_shift(A_in, A_shape, W_in, D_in, out):
     dst_state = shared_D[ty, tz]
 
     # find global output write location
-    shifted_x = x + shift_amt
-    if shifted_x < out.shape[1]:
+    shifted_x = x + shift_amt  # if x = 10
+    if y < A_shape[0] and x < A_shape[1]:
         cuda.atomic.add(out, (dst_state, shifted_x), shared_A[ty, tx])
