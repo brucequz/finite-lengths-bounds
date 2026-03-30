@@ -161,7 +161,7 @@ def setup_A_Wbit_D(path):
     Wout1 = np.sum(out1, axis=1, dtype=np.uint8)
     zidx0 = (Wout0 == 0).reshape(-1, 1)
     zidx1 = (Wout1 == 0).reshape(-1, 1)
-    W_weight = np.stack((Wout0, Wout1), axis=0).T.astype(np.uint8)
+    W_weight = np.stack((Wout0, Wout1), axis=0).T.copy().astype(np.uint8)
 
     ## proto distance spectrum
     # [::-1] for the binary representation is for
@@ -180,13 +180,9 @@ def setup_A_Wbit_D(path):
     basis = np.arange(0, num_total_states, 2 ** code_config["bch_config"]["M"])
     As = []
     for valid_starting_state in basis:
-        A = np.zeros(shape=(num_total_states, 1), dtype=np.float64)
+        A = np.zeros(shape=(num_total_states, 1), dtype=np.uint64)
         A[valid_starting_state] = 1
         As.append(A)
-
-    # set up W
-    # W_in: [input] x [num_states] x [max weight for one meta-stage]
-    W = np.stack((Wcoef0, Wcoef1), axis=0).astype(np.uint8)  # horizontal stack
 
     # set up D
     # D_in: [num_states] x [input]

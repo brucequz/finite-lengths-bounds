@@ -1,0 +1,18 @@
+bch_config:
+  K: 113
+  N: 127
+  M: 14
+  polynomial: "100001101110111"
+
+
+tbcc_config:
+  K: 127
+  N: 254
+  V: 8
+  gen_poly_1: "561"
+  gen_poly_2: "753"
+
+output_file_name: "k113n254v8_dist_spectrum.npy"
+
+# Metadata
+version: 1.0

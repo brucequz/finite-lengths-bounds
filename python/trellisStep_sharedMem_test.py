@@ -1,28 +1,73 @@
 import math
 import numpy as np
 import yaml
-import sys
+import os, sys
 from numba import cuda
 from setup import setup_A_W_D, setup_A_Wbit_D
 from step import trellisStep_shift, numba_sharedMem_trellisStep_shift
+import ctypes
+
+# 1. Load the Shared Library
+lib_path = os.path.abspath("lib/libtrellis.so")
+cuda_lib = ctypes.CDLL(lib_path)
+
+# Setup argument types
+cuda_lib.launch_trellis_kernel.argtypes = [
+    ctypes.c_int,  # max_weight
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_int,  # A
+    ctypes.c_void_p,
+    ctypes.c_int,  # W
+    ctypes.c_void_p,  # D
+    ctypes.c_void_p,
+    ctypes.c_int,  # Out
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,  # Grid
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,  # Block
+]
 
 
-# def trellisStep(A, W, D):
+def run_cuda_trellis(max_weight, d_A, A_cols, d_W, d_D, d_out, out_cols):
+    # 1. Extract raw integer addresses from Numba DeviceNDArrays
+    # .device_ctypes_pointer.value gives the actual 64-bit memory address
+    ptr_A = d_A.device_ctypes_pointer.value
+    ptr_W = d_W.device_ctypes_pointer.value
+    ptr_D = d_D.device_ctypes_pointer.value
+    ptr_out = d_out.device_ctypes_pointer.value
 
-#     A_x = A.shape[1]
-#     A_y = A.shape[0]
+    # 2. Force dimensions to standard Python ints
+    A_rows, _ = map(int, d_A.shape)
+    W_cols = int(d_W.shape[1])
 
-#     W_y = W.shape[0]
-#     W_z = W.shape[1]
+    # 3. Grid/Block logic
+    bx, by, bz = 32, 32, 1
+    gx = (A_cols + bx - 1) // bx
+    gy = (A_rows + by - 1) // by
+    gz = (W_cols + bz - 1) // bz
 
-#     D_y = D.shape[0]
-#     D_x = D.shape[1]
-
-#     # for every 4 states, add a different number to it
-#     increments = np.arange(W_y) // 8
-#     result = W + increments[:, None]
-
-#     return result
+    # 4. Call the C++ function
+    # Pass the .value (integers) directly; ctypes.c_void_p handles the conversion
+    cuda_lib.launch_trellis_kernel(
+        max_weight,
+        ptr_A,
+        A_rows,
+        A_cols,
+        ptr_W,
+        W_cols,
+        ptr_D,
+        ptr_out,
+        out_cols,
+        int(gx),
+        int(gy),
+        int(gz),
+        int(bx),
+        int(by),
+        int(bz),
+    )
 
 
 def main():
@@ -43,7 +88,7 @@ def main():
     print("W_weight: \n", W_weight)
     print("D: \n", D)
 
-    num_stages = 10
+    num_stages = 1
     max_shift_per_stage = 2
     overall_max_shift = num_stages * max_shift_per_stage
 
@@ -54,7 +99,7 @@ def main():
     print("ref_result shape: ", ref_result.shape)
     print("ref_result: \n", ref_result)
 
-    ## DUT
+    ## DUT1
     num_streams = 1
     cuda_streams = [cuda.stream() for _ in range(num_streams)]
     A_shape = A.shape
@@ -105,6 +150,42 @@ def main():
             d_buffer_in, d_buffer_out = d_buffer_out, d_buffer_in
 
             A_shape = tuple((A_shape[0], O_x))
+
+    # synchronize all streams
+    cuda.synchronize()
+
+    dut_result = d_buffer_in.copy_to_host()
+    print("dut_result shape: ", dut_result.shape)
+    print("dut_result: \n", dut_result)
+
+    ## CUDA DUT
+    A_shape = A.shape
+    W_y, W_z = W_weight.shape
+    print("max_X: ", max_X)
+
+    # output shape
+    O_x = A_shape[1]
+    for iter in range(num_stages):
+        # Calculate the output width
+        O_x += max_shift_per_stage
+
+        # Dynamic Grid Calculation (based on logical output width)
+        grid_x = math.ceil(O_x / threads_per_block[0])
+        grid_y = math.ceil(O_y / threads_per_block[1])
+        grid_z = math.ceil(W_z / threads_per_block[2])
+        blocks_per_grid = (grid_x, grid_y, grid_z)
+
+        # Zero the entire max buffer
+        d_buffer_out.copy_to_device(d_buffer_allzero, stream=curr_stream)
+
+        # Kernel Launch
+        run_cuda_trellis(max_X, d_buffer_in, A_shape[1], d_W, d_D, d_buffer_out, O_x)
+
+        # 7. The Swap (Variables now point to the other buffer)
+        d_buffer_in, d_buffer_out = d_buffer_out, d_buffer_in
+
+        # 8. Update the logical width for the NEXT iteration
+        A_shape = tuple((A_shape[0], O_x))
 
     # synchronize all streams
     cuda.synchronize()
