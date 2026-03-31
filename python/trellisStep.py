@@ -88,7 +88,7 @@ def accumulate_to_spectrum(buffer, state_idx, spectrum):
 
 def main():
 
-    path = "config/k51n126v8.yaml"
+    path = "config/k15n30v6.yaml"
     try:
         with open(path, "r") as f:
             code_config = yaml.safe_load(f)
@@ -114,7 +114,6 @@ def main():
     metaW_y, metaW_z = metaW.shape
     print(f"metaW shape: {metaW.shape}; metaD shape: {metaD.shape}")
 
-    num_stages = 1
     max_shift_per_leftover_stage = 2
     max_shift_per_metastage = length_meta_stage * max_shift_per_leftover_stage
 

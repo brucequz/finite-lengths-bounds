@@ -3,8 +3,9 @@ import numpy as np
 import yaml
 import os, sys
 from numba import cuda
-from setup import setup_A_W_D, setup_A_Wbit_D
-from step import trellisStep_shift, numba_sharedMem_trellisStep_shift
+from setup import setup_A_Wbit_D
+from step import trellisStep_shift
+from step_numba import numba_sharedMem_trellisStep_shift
 import ctypes
 
 # 1. Load the Shared Library

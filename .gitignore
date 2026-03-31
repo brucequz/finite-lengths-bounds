@@ -3,3 +3,4 @@
 .clang-format
 .vscode/
 *ipynb
+__pycache__/

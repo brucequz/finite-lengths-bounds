@@ -4,7 +4,7 @@ import math
 import numpy as np
 from numba import cuda
 from setup import setup_A_Wbit_D, computeMetaStage
-from step import trellisStep_shift, numba_sharedMem_trellisStep_shift
+from step_numba import numba_sharedMem_trellisStep_shift
 import argparse
 
 
