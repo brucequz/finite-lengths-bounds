@@ -141,6 +141,7 @@ def numba_sharedMem_trellisStep_foldshift(A_in, A_shape, W_in, D_in, out):
     W_shape, D_shape = W_in.shape, D_in.shape
     mid_y = num_states // 2
 
+    # mid_y is a large number: 128
     ## Load W into shared memory
     # we process 64 states for each thread block
     # storage requirement: 64*2*1 = 128 bytes
@@ -184,7 +185,7 @@ def numba_sharedMem_trellisStep_foldshift(A_in, A_shape, W_in, D_in, out):
     ## first group of states shift and write to result
     if y < mid_y and x < A_shape[1]:
         shift_amt_0 = shared_W[ty, tz]
-        dst_state_0 = shared_D[ty, tz]
+        dst_state_0 = shared_D[ty, tz] - dst_state_offset
         shifted_x_0 = x + shift_amt_0
         shared_out[dst_state_0, shifted_x_0] += shared_A[ty, tx]
         if y == 0 and x == 0 and z == 1:
@@ -201,7 +202,7 @@ def numba_sharedMem_trellisStep_foldshift(A_in, A_shape, W_in, D_in, out):
     ## second group of states shift and write to result
     if y < mid_y and x < A_shape[1]:
         shift_amt_1 = shared_W[ty + bs_y, tz]
-        dst_state_1 = shared_D[ty + bs_y, tz]
+        dst_state_1 = shared_D[ty + bs_y, tz] - dst_state_offset
         shifted_x_1 = x + shift_amt_1
         shared_out[dst_state_1, shifted_x_1] += shared_A[ty + bs_y, tx]
 

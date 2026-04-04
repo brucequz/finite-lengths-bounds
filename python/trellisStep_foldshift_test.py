@@ -11,7 +11,7 @@ import sys
 
 def main():
 
-    path = "config/k11n22v3.yaml"
+    path = "config/k31n62v6.yaml"
     try:
         with open(path, "r") as f:
             code_config = yaml.safe_load(f)
