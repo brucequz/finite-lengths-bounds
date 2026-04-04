@@ -11,7 +11,7 @@ import sys
 
 def main():
 
-    path = "config/k31n62v6.yaml"
+    path = "config/k51n126v6.yaml"
     try:
         with open(path, "r") as f:
             code_config = yaml.safe_load(f)
@@ -85,6 +85,11 @@ def main():
     else:
         print("ref_result: ", ref_result)
         print("dut_result: ", dut_result)
+        diff = np.abs(dut_result - ref_result)
+        max_diff = np.max(diff)
+        print(f"The maximum difference is: {max_diff}")
+        idx = np.unravel_index(np.argmax(diff), diff.shape)
+        print(f"Location of max difference: {idx}")
 
 
 if __name__ == "__main__":

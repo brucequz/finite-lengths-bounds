@@ -141,7 +141,6 @@ def numba_sharedMem_trellisStep_foldshift(A_in, A_shape, W_in, D_in, out):
     W_shape, D_shape = W_in.shape, D_in.shape
     mid_y = num_states // 2
 
-    # mid_y is a large number: 128
     ## Load W into shared memory
     # we process 64 states for each thread block
     # storage requirement: 64*2*1 = 128 bytes
@@ -171,10 +170,9 @@ def numba_sharedMem_trellisStep_foldshift(A_in, A_shape, W_in, D_in, out):
 
     ## Allocate space for output in shared memory
     shared_out = cuda.shared.array(shape=(32, 34), dtype=np.uint64)
-    if y < mid_y and x < A_shape[1]:
+    if y < mid_y and x < A_shape[1] + 2:
         shared_out[ty, tx] = 0
-        if x + 32 < A_shape[1] + 2:
-            shared_out[ty + bs_y, tx] = 0
+        shared_out[ty + bs_y, tx] = 0
 
     cuda.syncthreads()
 
