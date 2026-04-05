@@ -11,7 +11,7 @@ import sys
 
 def main():
 
-    path = "config/k51n126v6.yaml"
+    path = "config/k21n62v6.yaml"
     try:
         with open(path, "r") as f:
             code_config = yaml.safe_load(f)
@@ -28,14 +28,16 @@ def main():
     O_y, O_x = A_shape
     print("W_weight: ", W_weight)
 
-    ## Ref
-    # a single trellis Step
-    ref_result = trellisStep_shift(A, W_weight, D, 2)
-
-    # DUT
-    num_stages = 1
+    num_stages = 15
     max_shift_per_stage = 2
 
+    ## Ref
+    # a single trellis Step
+    ref_result = A
+    for i_stage in range(num_stages):
+        ref_result = trellisStep_shift(ref_result, W_weight, D, max_shift_per_stage)
+
+    # DUT
     # prepare ping-pong buffer at CPU
     max_X = A_shape[1] + (max_shift_per_stage) * num_stages
     h_in_buffer = np.zeros(shape=(O_y, max_X), dtype=np.float64)
@@ -55,6 +57,7 @@ def main():
     threads_per_block = (32, 16, 2)
 
     for i_stage in range(num_stages):
+        print("i_stage: ", i_stage)
         O_x += max_shift_per_stage
 
         grid_x = math.ceil(O_x / threads_per_block[0])
@@ -72,7 +75,7 @@ def main():
 
         d_buffer_in, d_buffer_out = d_buffer_out, d_buffer_in
 
-        A_shape = tuple((A_shape[0], O_x))
+        A_shape = tuple((O_y, O_x))
 
     dut_result = d_buffer_in.copy_to_host()
 
