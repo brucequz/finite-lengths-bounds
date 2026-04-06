@@ -4,25 +4,8 @@ import math
 import numpy as np
 from numba import cuda
 from setup import setup_A_Wbit_D, computeMetaStage
-from step_numba import numba_sharedMem_trellisStep_shift
+from step_numba import numba_sharedMem_trellisStep_shift, accumulate_to_spectrum
 import argparse
-
-
-@cuda.jit
-def accumulate_to_spectrum(buffer, state_idx, spectrum):
-    """Accumulates the specific row of the buffer into the spectrum stored on device.
-
-    Args:
-        buffer: complete distance spectrum of all states and stages.
-        state_idx: the beginning state needed to be extracted from buffer.
-        spectrum: the output. A small array of actual TBCC spectrum stored on device.
-
-    """
-    x = cuda.grid(1)
-    max_X = buffer.shape[1]
-
-    if x < max_X:
-        cuda.atomic.add(spectrum, x, buffer[state_idx, x])
 
 
 def main():
@@ -53,10 +36,8 @@ def main():
     metaW_y, metaW_z = metaW.shape
     print(f"metaW shape: {metaW.shape}; metaD shape: {metaD.shape}")
 
-    num_stages = 1
     max_shift_per_leftover_stage = 2
     max_shift_per_metastage = length_meta_stage * max_shift_per_leftover_stage
-    overall_max_shift = num_stages * max_shift_per_leftover_stage
 
     num_leftover_iters = num_trellis_stages % length_meta_stage
     num_meta_iters = num_trellis_stages // length_meta_stage

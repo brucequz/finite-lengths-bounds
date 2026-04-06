@@ -3,6 +3,23 @@ from numba import cuda
 
 
 @cuda.jit
+def accumulate_to_spectrum(buffer, state_idx, spectrum):
+    """Accumulates the specific row of the buffer into the spectrum stored on device.
+
+    Args:
+        buffer: complete distance spectrum of all states and stages.
+        state_idx: the beginning state needed to be extracted from buffer.
+        spectrum: the output. A small array of actual TBCC spectrum stored on device.
+
+    """
+    x = cuda.grid(1)
+    max_X = buffer.shape[1]
+
+    if x < max_X:
+        cuda.atomic.add(spectrum, x, buffer[state_idx, x])
+
+
+@cuda.jit
 def numba_trellisStep_conv(A_in, A_shape, W_in, D_in, out):
     """
     Computes trellis Step for one meta-stage. The previous distance spectrum is stored in A_in.
