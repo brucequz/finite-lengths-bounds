@@ -148,11 +148,11 @@ def numba_sharedMem_trellisStep_foldshift(A_in, A_shape, W_in, D_in, out):
         shape=(32, 2), dtype=np.uint8
     )  # 1 bytes for weight, support up to weight=255
     # set shared_W to 0 before using
-    if y < bs_y and z < W_shape[1]:
+    if ty < bs_y and z < W_shape[1]:
         shared_W[ty, tz] = 0
         shared_W[ty + bs_y, tz] = 0
     # set W
-    if y < mid_y and z < W_shape[1]:
+    if y < mid_y and ty < bs_y and z < W_shape[1]:
         shared_W[ty, tz] = W_in[y, z]
         shared_W[ty + bs_y, tz] = W_in[y + mid_y, z]
 
@@ -162,26 +162,26 @@ def numba_sharedMem_trellisStep_foldshift(A_in, A_shape, W_in, D_in, out):
     shared_D = cuda.shared.array(
         shape=(32, 2), dtype=np.uint32
     )  # 32 bits to support states up to 2^32-1
-    if y < bs_y and z < D_shape[1]:
+    if ty < bs_y and z < D_shape[1]:
         shared_D[ty, tz] = 0
         shared_D[ty + bs_y, tz] = 0
-    if y < mid_y and z < D_shape[1]:
+    if y < mid_y and ty < bs_y and z < D_shape[1]:
         shared_D[ty, tz] = D_in[y, z]
         shared_D[ty + bs_y, tz] = D_in[y + mid_y, z]
 
     ## Load A into shared memory
     # storage requirement: 64*32*8 = 16,384 or 64*32*16 = 32,768
     shared_A = cuda.shared.array(shape=(32, 32), dtype=np.uint64)  # 64 bits or 128 bits
-    if y < bs_y and x < A_shape[1]:
+    if ty < bs_y and x < A_shape[1]:
         shared_A[ty, tx] = 0
         shared_A[ty + bs_y, tx] = 0
-    if y < mid_y and x < A_shape[1]:
+    if y < mid_y and ty < bs_y and x < A_shape[1]:
         shared_A[ty, tx] = A_in[y, x]
         shared_A[ty + bs_y, tx] = A_in[y + mid_y, x]
 
     ## Allocate space for output in shared memory
     shared_out = cuda.shared.array(shape=(32, 34), dtype=np.uint64)
-    if y < bs_y and x < A_shape[1] + 2:
+    if ty < bs_y and x < A_shape[1] + 2:
         shared_out[ty, tx] = 0
         shared_out[ty + bs_y, tx] = 0
 
@@ -190,41 +190,24 @@ def numba_sharedMem_trellisStep_foldshift(A_in, A_shape, W_in, D_in, out):
     dst_state_offset = shared_D[0, 0]
 
     ## first group of states shift and write to result
-    if y < mid_y and x < A_shape[1]:
+    if ty < bs_y and x < A_shape[1]:
         shift_amt_0 = shared_W[ty, tz]
         dst_state_0 = shared_D[ty, tz] - dst_state_offset
         shifted_x_0 = tx + shift_amt_0
         shared_out[dst_state_0, shifted_x_0] += shared_A[ty, tx]
-        # if y == 3 and x == 2 and z == 0:
-        #     print("shared_A[ty, tx]: ", shared_A[ty, tx])
-        #     print("dst_state_0: ", dst_state_0)
-        #     print("shifted_x_0: ", shifted_x_0)
-        #     print(
-        #         "after shared_out[dst_state_0, shifted_x_0]",
-        #         shared_out[dst_state_0, shifted_x_0],
-        #     )
 
     cuda.syncthreads()
 
     ## second group of states shift and write to result
-    if y < mid_y and x < A_shape[1]:
+    if ty < bs_y and x < A_shape[1]:
         shift_amt_1 = shared_W[ty + bs_y, tz]
         dst_state_1 = shared_D[ty + bs_y, tz] - dst_state_offset
         shifted_x_1 = tx + shift_amt_1
         shared_out[dst_state_1, shifted_x_1] += shared_A[ty + bs_y, tx]
-        # if y == 3 and x == 3 and z == 0:
-        #     print("shared_A[ty + bs_y, tx]: ", shared_A[ty + bs_y, tx])
-        #     print("dst_state_0: ", dst_state_0)
-        #     print("shifted_x_0: ", shifted_x_0)
-        #     print(
-        #         "shared_out[dst_state_0, shifted_x_0]",
-        #         shared_out[dst_state_0, shifted_x_0],
-        #     )
 
     cuda.syncthreads()
     ## Write shared_out to global memory
     # To avoid atomic operations, each threadblock needs to process
     # the entire row of A_in
-    if y < bs_y and x < A_shape[1] + 2:
+    if ty < bs_y and x < A_shape[1] + 2:
         out[2 * y + z, x] += shared_out[2 * ty + tz, tx]
-        # out[2 * y + bs_y, x] += shared_out[ty + bs_y, tx]

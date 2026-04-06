@@ -11,7 +11,7 @@ import sys
 
 def main():
 
-    path = "config/k21n62v6.yaml"
+    path = "config/k51n126v6.yaml"
     try:
         with open(path, "r") as f:
             code_config = yaml.safe_load(f)
@@ -22,13 +22,13 @@ def main():
     output_file_name = code_config["output_file_name"]
 
     As, W_weight, D, basis, num_trellis_stages = setup_A_Wbit_D(path)
-    A = As[0]
+    A = As[10]
     W_y, W_z = W_weight.shape
     A_shape = A.shape
     O_y, O_x = A_shape
     print("W_weight: ", W_weight)
 
-    num_stages = 15
+    num_stages = 10
     max_shift_per_stage = 2
 
     ## Ref
@@ -88,11 +88,8 @@ def main():
     else:
         print("ref_result: ", ref_result)
         print("dut_result: ", dut_result)
-        diff = np.abs(dut_result - ref_result)
-        max_diff = np.max(diff)
-        print(f"The maximum difference is: {max_diff}")
-        idx = np.unravel_index(np.argmax(diff), diff.shape)
-        print(f"Location of max difference: {idx}")
+        diff_indices = np.argwhere(ref_result != dut_result)
+        print(diff_indices)
 
 
 if __name__ == "__main__":
