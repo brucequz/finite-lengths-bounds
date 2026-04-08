@@ -61,7 +61,7 @@ def main():
         d_D = cuda.to_device(D)
 
         # block and grid size allocation
-        threads_per_block = (32, 16, 2)
+        threads_per_block = (32, 32, 1)
 
         for i_stage in range(num_trellis_stages):
             O_x += max_shift_per_stage
@@ -99,7 +99,7 @@ def main():
 
 
 def test_spectrum():
-    path = "config/k51n126v6.yaml"
+    path = "config/k21n62v6.yaml"
     try:
         with open(path, "r") as f:
             code_config = yaml.safe_load(f)
@@ -110,13 +110,13 @@ def test_spectrum():
     output_file_name = code_config["output_file_name"]
 
     As, W_weight, D, basis, num_trellis_stages = setup_A_Wbit_D(path)
-    A = As[0]
+    A = As[5]
     W_y, W_z = W_weight.shape
     A_shape = A.shape
     O_y, O_x = A_shape
     print("W_weight: ", W_weight)
 
-    num_stages = 20
+    num_stages = 30
     max_shift_per_stage = 2
 
     ## Ref
@@ -142,7 +142,7 @@ def test_spectrum():
     d_D = cuda.to_device(D)
 
     # block and grid size allocation
-    threads_per_block = (32, 16, 2)
+    threads_per_block = (32, 32, 1)
 
     for i_stage in range(num_stages):
         print("i_stage: ", i_stage)
