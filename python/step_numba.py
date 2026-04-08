@@ -1,5 +1,6 @@
 import numpy as np
 from numba import cuda
+import math
 
 
 @cuda.jit
@@ -186,45 +187,59 @@ def numba_sharedMem_trellisStep_foldshift(A_in, A_shape, W_in, D_in, out):
         shared_D[ty, tz] = D_in[y, z]
         shared_D[ty + bs_y, tz] = D_in[y + mid_y, z]
 
-    ## Load A into shared memory
-    # storage requirement: 64*32*8 = 16,384 or 64*32*16 = 32,768
-    shared_A = cuda.shared.array(shape=(32, 32), dtype=np.uint64)  # 64 bits or 128 bits
-    if ty < bs_y and x < A_shape[1]:
-        shared_A[ty, tx] = 0
-        shared_A[ty + bs_y, tx] = 0
-    if y < mid_y and ty < bs_y and x < A_shape[1]:
-        shared_A[ty, tx] = A_in[y, x]
-        shared_A[ty + bs_y, tx] = A_in[y + mid_y, x]
+    num_blk_iters = math.ceil(curr_max_weight / bs_x)
+    for i_blkiter in range(num_blk_iters):
+        x_id = x + i_blkiter * bs_x
 
-    ## Allocate space for output in shared memory
-    shared_out = cuda.shared.array(shape=(32, 34), dtype=np.uint64)
-    if ty < bs_y and x < A_shape[1] + 2:
-        shared_out[ty, tx] = 0
-        shared_out[ty + bs_y, tx] = 0
+        ## Load A into shared memory
+        # storage requirement: 64*32*8 = 16,384 or 64*32*16 = 32,768
+        shared_A = cuda.shared.array(
+            shape=(32, 32), dtype=np.uint64
+        )  # 64 bits or 128 bits
+        if ty < bs_y and tx < bs_x:
+            shared_A[ty, tx] = 0
+            shared_A[ty + bs_y, tx] = 0
+        if y < mid_y and ty < bs_y and x_id < curr_max_weight:
+            shared_A[ty, tx] = A_in[y, x_id]
+            shared_A[ty + bs_y, tx] = A_in[y + mid_y, x_id]
 
-    cuda.syncthreads()
+        ## Allocate space for output in shared memory
+        shared_out = cuda.shared.array(shape=(32, 34), dtype=np.uint64)
+        if ty < bs_y and tx < bs_x:
+            shared_out[ty, tx] = 0
+            shared_out[ty + bs_y, tx] = 0
+        if ty < bs_y and tx < 2:
+            shared_out[ty, tx + bs_x] = 0
+            shared_out[ty + bs_y, tx + bs_x] = 0
 
-    dst_state_offset = shared_D[0, 0]
+        cuda.syncthreads()
 
-    ## first group of states shift and write to result
-    if ty < bs_y and x < A_shape[1]:
-        shift_amt_0 = shared_W[ty, tz]
-        dst_state_0 = shared_D[ty, tz] - dst_state_offset
-        shifted_x_0 = tx + shift_amt_0
-        shared_out[dst_state_0, shifted_x_0] += shared_A[ty, tx]
+        dst_state_offset = shared_D[0, 0]
 
-    cuda.syncthreads()
+        ## first group of states shift and write to result
+        if y < mid_y and ty < bs_y and x_id < A_shape[1]:
+            shift_amt_0 = shared_W[ty, tz]
+            dst_state_0 = shared_D[ty, tz] - dst_state_offset
+            shifted_x_0 = tx + shift_amt_0
+            shared_out[dst_state_0, shifted_x_0] += shared_A[ty, tx]
 
-    ## second group of states shift and write to result
-    if ty < bs_y and x < A_shape[1]:
-        shift_amt_1 = shared_W[ty + bs_y, tz]
-        dst_state_1 = shared_D[ty + bs_y, tz] - dst_state_offset
-        shifted_x_1 = tx + shift_amt_1
-        shared_out[dst_state_1, shifted_x_1] += shared_A[ty + bs_y, tx]
+        cuda.syncthreads()
 
-    cuda.syncthreads()
-    ## Write shared_out to global memory
-    # To avoid atomic operations, each threadblock needs to process
-    # the entire row of A_in
-    if ty < bs_y and x < A_shape[1] + 2:
-        out[2 * y + z, x] += shared_out[2 * ty + tz, tx]
+        ## second group of states shift and write to result
+        if y < mid_y and ty < bs_y and x_id < A_shape[1]:
+            shift_amt_1 = shared_W[ty + bs_y, tz]
+            dst_state_1 = shared_D[ty + bs_y, tz] - dst_state_offset
+            shifted_x_1 = tx + shift_amt_1
+            shared_out[dst_state_1, shifted_x_1] += shared_A[ty + bs_y, tx]
+
+        cuda.syncthreads()
+
+        ## Write shared_out to global memory
+        # To avoid atomic operations, each threadblock needs to process
+        # the entire row of A_in
+        if x_id < curr_max_weight + 2:
+            out[2 * y + z, x_id] += shared_out[2 * ty + tz, tx]
+            if tx < 2 and x_id + bs_x < curr_max_weight + 2:
+                out[2 * y + z, x_id + bs_x] += shared_out[2 * ty + tz, tx + bs_x]
+
+        cuda.syncthreads()
